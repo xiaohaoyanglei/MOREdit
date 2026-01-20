@@ -1,0 +1,41 @@
+model:
+  config: pointer_lora/pointer_lora_config.yaml
+  lora_weights: /root/autodl-tmp/pointer_lora/output/20251201-141737/weights/lora_step_007000.pt
+  refiner_weights: null
+
+inference:
+  image: /root/autodl-tmp/test_images/test4.png
+  pointer_prompt: "the first person from the right"
+  edit_prompt: "Change the person's outfit to a blue suit."
+  negative_prompt: "blurry, out of focus, low detail"
+  mask_mode: clickseg
+  clickseg_checkpoint: /root/autodl-tmp/last_checkpoint.pth
+  clickseg_threshold: 0.15
+  clickseg_filter_component: true
+  clickseg_use_prev_mask: true
+  clickseg_infer_size: 384
+  clickseg_prev_mask_scale: 0.9
+  clickseg_save_noprev: true
+
+  # Use the generic Kontext pipeline on a cropped region (no inpaint pipeline)
+  use_inpaint_pipeline: true
+  padding_mask_crop: null
+
+  crop_edit: false
+  crop_pad: 48
+  crop_pad_x: 48
+  crop_pad_y: 160
+  crop_full_height: true
+  # FULL paste-back: no mask suppression, useful to verify whether mask blending is causing truncation.
+  crop_paste_mode: full
+  crop_feather: 2.0
+  crop_dilate: 0
+  crop_alpha_gamma: 1.0
+
+  width: null
+  height: null
+  steps: 28
+  guidance_scale: 6.0
+  true_cfg_scale: 1.0
+  seed: 42
+  output_dir: pointer_lora/output/softmask_demo

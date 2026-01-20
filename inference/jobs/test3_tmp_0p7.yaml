@@ -1,0 +1,39 @@
+model:
+  config: pointer_lora/pointer_lora_config.yaml
+  lora_weights: /root/autodl-tmp/pointer_lora/output/20251201-141737/weights/lora_step_008000.pt
+  refiner_weights: null
+inference:
+  image: /root/autodl-tmp/test_images/test4.png
+  pointer_prompt: the first person from the right
+  edit_prompt: Change the person's outfit to a blue suit. Keep the face and identity
+    unchanged.
+  edit_backend: qwen
+  negative_prompt: blurry face, deformed face, low detail, bad anatomy, low quality
+  mask_mode: peak_region
+  peak_region_threshold: 0.3
+  peak_region_threshold_mode: rel
+  peak_region_connectivity: 8
+  peak_region_max_iters: 2048
+  latent_inpaint_strength: 1.0
+  mask_feather: 8.0
+  mask_dilate: 16
+  qwen_strength: 0.7
+  latent_blend_alpha: 0.7
+  conditioning_masked_image: true
+  conditioning_fill: noise
+  conditioning_noise_strength: 1.0
+  use_inpaint_pipeline: false
+  padding_mask_crop: null
+  crop_edit: false
+  crop_pad: 48
+  crop_feather: 2.0
+  crop_paste_mode: mask
+  crop_dilate: 20
+  crop_alpha_gamma: 0.75
+  width: null
+  height: null
+  steps: 40
+  guidance_scale: 4.0
+  true_cfg_scale: 4.0
+  seed: 42
+  output_dir: pointer_lora/output/softmask_demo_s0p7

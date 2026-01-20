@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyTorch / Training outputs
+output/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+
+# Model files (exclude large model weights)
+*.pkl
+*.h5
+*.pb
+
+# Data files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.npy
+*.npz
+*.hdf5
+
+# Keep example configs and small test files
+!test_images/*.png
+!test_images/*.jpg
+
+# JSON data (keep configs, exclude large datasets)
+*.json
+!pointer_lora_config.yaml
+!inference/jobs/*.yaml
+!inference/jobs/*.json
+!**/run_metadata.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+*.swp
+*.swo
+*~
+
+# IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Plan files (Claude Code specific)
+.claude/
+
+# Weights & Biases
+wandb/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json

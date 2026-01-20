@@ -1,0 +1,83 @@
+# Pointer LoRA training configuration
+
+model:
+  path: "/root/autodl-tmp/FLUX1-Kontext-dev"
+  offload_text_encoders: true
+
+data:
+  annotations: "/root/autodl-tmp/mhpv2_triples_en/annotations.json"
+  root: "/root/autodl-tmp/mhpv2_triples_en"
+  resolution: 640
+
+training:
+  output_dir: "/root/autodl-tmp/pointer_lora/output"
+  steps: 10000
+  batch_size: 1
+  lr: 1.0e-4
+  weight_decay: 0.0
+  seed: 42
+  dtype: "bf16"       # 可选: float32 | float16 | bf16
+  log_every: 10
+  heatmap_every: 500
+  heatmap_max_samples: 0
+  checkpoint_every: 1000
+  pointer_debug_every: 200
+
+lora:
+  rank: 16
+  alpha: 32
+  attn_blocks:
+    - "transformer_blocks.10"
+    - "transformer_blocks.11"
+    - "transformer_blocks.12"
+    - "transformer_blocks.13"
+    - "transformer_blocks.14"
+    - "transformer_blocks.15"
+    - "transformer_blocks.16"
+  projections:
+    - "to_q"
+    - "to_k"
+    - "to_v"
+    - "add_q_proj"
+    - "add_k_proj"
+    - "add_v_proj"
+    - "to_add_out"
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 0.5
+  smooth: 1.0e-6
+  background_weight: 0.4
+  contrast_weight: 0.5
+  contrast_margin: 0.15
+
+pointer:
+  token_mode: "ordinal"   # phrase | ordinal
+  token_filters:
+    - "person"
+    - "people"
+    - "man"
+    - "woman"
+    - "girl"
+    - "boy"
+  heatmap:
+    combine: "mean"       # mean | max
+    temperature: 1.0
+    epsilon: 1.0e-6
+  superres:
+    factor: 2
+    sharpness: 0.3
+
+refiner:
+  weights: null
+  in_channels: 4
+  base_channels: 32
+  gaussian_sigma: 0.05    # 相对整图的 sigma 比例
+  dilate_iters: 1
+
+test_image:
+  path: "/root/autodl-tmp/test_images/test4.png"
+  prompt: "The second person on the right"
+  # mask: "/root/autodl-tmp/test_images/test3_mask.png"  # 可选：若提供会一并在热力图网格中显示
+
+
