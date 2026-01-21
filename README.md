@@ -120,8 +120,8 @@ python -m pointer_lora.inference.run_soft_mask \
 ```
 Pointer LoRA 生成 Mask → ControlNet Inpainting 使用 Mask 编辑
 ```
-- **Mask 100% 来自 Pointer LoRA**（你的核心技术）
-- **ControlNet 只负责更智能的 inpainting**（借助社区模型）
+- **Mask 100% 来自 Pointer LoRA**
+- **ControlNet 只负责更智能的 inpainting**
 
 详细文档请参考 [inference/README.md](inference/README.md)。
 
