@@ -1,25 +1,29 @@
 model:
-  config: pointer_lora/pointer_lora_config.yaml
-  lora_weights: /root/autodl-tmp/pointer_lora/output/20251201-141737/weights/lora_step_008000.pt
+  config: /workspace/MOREdit/pointer_lora_config.yaml
+  lora_weights: /workspace/MOREdit/output/20260307-112259/weights/lora_step_010000.pt
   refiner_weights: null
 
 inference:
-  image: /root/autodl-tmp/test_images/test4.png
-  pointer_prompt: "the first person from the right"
+  image: /workspace/test/test3.png
+  pointer_prompt: "the third person from the left"
   # 使用 ControlNet Inpainting：prompt 只描述要改什么，无需重复位置信息
   # ControlNet 会根据 mask 精确控制编辑区域
-  edit_prompt: "In the same anime style, change the person's outfit to a blue suit. Keep the face and identity unchanged."
+  edit_prompt: "The same person wearing a red jacket, everything else unchanged."
 
   # Qwen ControlNet Inpainting 配置
   edit_backend: qwen
   qwen_mode: inpaint  # 使用 inpaint 模式以启用 ControlNet
-  qwen_controlnet_path: /root/autodl-tmp/Qwen-Image-ControlNet-Inpainting  # ControlNet 模型路径
+  qwen_controlnet_path: /workspace/models/Qwen-Image-ControlNet-Inpainting  # ControlNet 模型路径
   qwen_strength: 0.8  # inpaint 强度（仅 inpaint 模式有效）
+  controlnet_conditioning_scale: 1.0
 
   negative_prompt: "blurry face, deformed face, low detail, bad anatomy, low quality"
 
   # Mask 生成策略
-  mask_mode: peak_region
+  mask_mode: clickseg
+  clickseg_checkpoint: /workspace/models/clickseg_last_checkpoint.pth
+  clickseg_threshold: 0.40
+  clickseg_filter_component: true
   peak_region_threshold: 0.3
   peak_region_threshold_mode: rel
   peak_region_connectivity: 8
@@ -39,12 +43,12 @@ inference:
   width: null   # null = 使用原图尺寸（自动对齐到16的倍数）
   height: null
   steps: 30     # ControlNet 推荐 30-50 步
-  guidance_scale: 4.0
-  true_cfg_scale: 4.0
+  guidance_scale: 1.0   # 官方 demo 默认值
+  true_cfg_scale: 1.0   # 1.0 = 不启用 dual-pass CFG，背景保留质量更好
   seed: 42
 
   # 输出目录
-  output_dir: pointer_lora/output/controlnet_demo
+  output_dir: /workspace/MOREdit/output/controlnet_demo
 
   # Crop 编辑参数（可选，用于进一步减少改错人的风险）
   crop_edit: false

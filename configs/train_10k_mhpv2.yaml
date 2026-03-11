@@ -1,0 +1,79 @@
+model:
+  path: "/workspace/models/Qwen-Image-2512"
+  offload_text_encoders: false
+
+data:
+  annotations: "/workspace/dataset/mhpv2_triples_en/annotations.json"
+  root: "/workspace/dataset/mhpv2_triples_en"
+  resolution: 640
+
+training:
+  output_dir: "/workspace/MOREdit/output"
+  steps: 10000
+  batch_size: 1
+  lr: 1.0e-4
+  weight_decay: 0.0
+  seed: 42
+  dtype: "bf16"
+  log_every: 1
+  heatmap_every: 1000
+  heatmap_max_samples: 1
+  checkpoint_every: 1000
+  pointer_debug_every: 0
+
+lora:
+  rank: 16
+  alpha: 32
+  attn_blocks:
+    - "transformer_blocks.10"
+    - "transformer_blocks.11"
+    - "transformer_blocks.12"
+    - "transformer_blocks.13"
+    - "transformer_blocks.14"
+    - "transformer_blocks.15"
+    - "transformer_blocks.16"
+  projections:
+    - "to_q"
+    - "to_k"
+    - "to_v"
+    - "add_q_proj"
+    - "add_k_proj"
+    - "add_v_proj"
+    - "to_add_out"
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 0.5
+  smooth: 1.0e-6
+  background_weight: 0.4
+  contrast_weight: 0.5
+  contrast_margin: 0.15
+
+pointer:
+  token_mode: "ordinal"
+  token_filters:
+    - "person"
+    - "people"
+    - "man"
+    - "woman"
+    - "girl"
+    - "boy"
+  heatmap:
+    combine: "mean"
+    temperature: 1.0
+    epsilon: 1.0e-6
+  superres:
+    factor: 2
+    sharpness: 0.3
+
+refiner:
+  weights: null
+  in_channels: 4
+  base_channels: 32
+  gaussian_sigma: 0.05
+  dilate_iters: 1
+
+test_image:
+  path: "/workspace/test/test3.png"
+  mask: null
+  prompt: "the third person from the right"

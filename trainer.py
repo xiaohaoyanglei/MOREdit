@@ -1,4 +1,4 @@
-"""Pointer LoRA trainer built on top of raw Flux Kontext components."""
+"""Pointer LoRA trainer built on top of Qwen image components."""
 
 from __future__ import annotations
 
@@ -17,10 +17,9 @@ from PIL import Image, ImageFile
 
 from .dataset import PointerTripletDataset
 from .losses import PointerLossConfig, compute_pointer_losses
-from .lora import LoRAInjectionConfig, inject_lora_into_attention, LoRALinear
-from .model import PromptEmbeds, encode_images, encode_prompts, load_flux_kontext_components, predict_noise
+from .lora import LoRAInjectionConfig, inject_lora_into_attention, LoRALinear, is_qwen_joint_attention
+from .model import PromptEmbeds, encode_images, encode_prompts, load_qwen_components, predict_noise
 from .pointer_recorder import PointerCache, PointerRecorder
-from .scheduler import CustomFlowMatchEulerDiscreteScheduler
 
 
 @dataclass
@@ -96,15 +95,12 @@ class PointerTrainer:
             self.tokenizers,
             self.vae,
             self.scheduler,
-        ) = load_flux_kontext_components(
+        ) = load_qwen_components(
             config.model_path,
             device=self.device,
             dtype=self.dtype,
             offload_text_encoders=config.offload_text_encoders,
         )
-
-        if isinstance(self.scheduler, CustomFlowMatchEulerDiscreteScheduler):
-            self.scheduler.set_train_timesteps(self.scheduler.config.num_train_timesteps, device=self.device)
 
         self.lora_modules: List[LoRALinear] = inject_lora_into_attention(
             self.transformer,
@@ -145,12 +141,13 @@ class PointerTrainer:
     def _attach_pointer_recorders(self):
         self._original_processors: Dict[str, torch.nn.Module] = {}
         for name, module in self.transformer.named_modules():
-            if isinstance(module, torch.nn.Module) and module.__class__.__name__ == "FluxAttention":
-                if not any(name.startswith(prefix) for prefix in self.lora_config.attn_block_prefixes):
-                    continue
-                recorder = PointerRecorder(owner=self, layer_key=name)
-                self._original_processors[name] = module.processor
-                module.set_processor(recorder)
+            if not is_qwen_joint_attention(module):
+                continue
+            if not any(name.startswith(prefix) for prefix in self.lora_config.attn_block_prefixes):
+                continue
+            recorder = PointerRecorder(owner=self, layer_key=name)
+            self._original_processors[name] = module.processor
+            module.set_processor(recorder)
 
     def record_pointer(self, key: str, tensor: torch.Tensor):
         self.pointer_cache.append(key, tensor)
@@ -198,16 +195,19 @@ class PointerTrainer:
         return batch
 
     def _build_token_masks(self, prompts: List[str]) -> torch.Tensor:
-        tokenizer = self.tokenizers[1]
-        encoded = tokenizer(
-            prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        input_ids = encoded.input_ids
-        attention_mask = encoded.attention_mask
+        tokenizer = self.tokenizers[0]
+        if hasattr(tokenizer, "encode_pointer_tokens"):
+            input_ids, attention_mask = tokenizer.encode_pointer_tokens(prompts, device=self.device)
+        else:
+            encoded = tokenizer(
+                prompts,
+                padding="max_length",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            input_ids = encoded.input_ids.to(self.device)
+            attention_mask = encoded.attention_mask.to(self.device)
 
         masks = torch.zeros_like(input_ids, dtype=torch.bool)
 
@@ -233,7 +233,7 @@ class PointerTrainer:
         }
 
         def normalize_token(token: str) -> str:
-            return token.lower().replace("▁", "").strip()
+            return token.replace("▁", "").replace("Ġ", "").replace("ġ", "").strip().lower()
 
         for batch_idx, ids in enumerate(input_ids):
             tokens = tokenizer.convert_ids_to_tokens(ids.tolist())
@@ -257,6 +257,11 @@ class PointerTrainer:
 
         for batch_idx in range(masks.size(0)):
             if not masks[batch_idx].any():
+                prompt_preview = prompts[batch_idx] if batch_idx < len(prompts) else ""
+                print(
+                    f"[pointer-trainer] Warning: no pointer tokens matched for prompt={prompt_preview!r}; "
+                    "falling back to full attention mask."
+                )
                 masks[batch_idx] = attention_mask[batch_idx].bool()
 
         return masks.to(self.device)
@@ -371,9 +376,7 @@ class PointerTrainer:
     ) -> torch.Tensor:
         pixel_values = pixel_values.to(self.device, dtype=self.dtype)
         latents = encode_images(self.vae, pixel_values).to(self.device, dtype=self.dtype)
-        noise = torch.zeros_like(latents, dtype=self.dtype, device=self.device)
         timesteps = torch.zeros((latents.size(0),), dtype=torch.long, device=self.device)
-        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps).to(self.device, dtype=self.dtype)
 
         embeds: PromptEmbeds = encode_prompts(
             prompts,
@@ -388,7 +391,7 @@ class PointerTrainer:
             predict_noise(
                 self.transformer,
                 self.scheduler,
-                noisy_latents,
+                latents,
                 timesteps,
                 embeds,
             )
@@ -581,14 +584,22 @@ class PointerTrainer:
 
             latents = encode_images(self.vae, pixel_values).to(self.device, dtype=self.dtype)
             noise = torch.randn_like(latents, dtype=self.dtype, device=self.device)
-            timesteps = torch.randint(
+            schedule_timesteps = self.scheduler.timesteps.to(device=self.device)
+            timestep_indices = torch.randint(
                 0,
-                self.scheduler.config.num_train_timesteps,
+                schedule_timesteps.shape[0],
                 (latents.size(0),),
                 device=self.device,
                 dtype=torch.long,
             )
-            noisy_latents = self.scheduler.add_noise(latents, noise, timesteps).to(self.device, dtype=self.dtype)
+            timesteps = schedule_timesteps[timestep_indices]
+            if hasattr(self.scheduler, "add_noise"):
+                noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
+            elif hasattr(self.scheduler, "scale_noise"):
+                noisy_latents = self.scheduler.scale_noise(latents, timesteps, noise=noise)
+            else:
+                raise RuntimeError("Scheduler does not support adding/scaling noise for training.")
+            noisy_latents = noisy_latents.to(self.device, dtype=self.dtype)
 
             embeds: PromptEmbeds = encode_prompts(
                 prompts,
@@ -663,5 +674,3 @@ class PointerTrainer:
 
         if self.config.checkpoint_every <= 0 or self.config.num_steps % self.config.checkpoint_every != 0:
             self._save_lora_weights(self.config.num_steps)
-
-

@@ -1,6 +1,6 @@
 model:
   config: pointer_lora/pointer_lora_config.yaml
-  lora_weights: /root/autodl-tmp/pointer_lora/output/20251201-141737/weights/lora_step_008000.pt
+  lora_weights: /workspace/MOREdit/output/20251201-141737/weights/lora_step_008000.pt
   refiner_weights: null
 inference:
   image: /root/autodl-tmp/test_images/test4.png
@@ -36,4 +36,4 @@ inference:
   guidance_scale: 4.0
   true_cfg_scale: 4.0
   seed: 42
-  output_dir: pointer_lora/output/softmask_demo_s0p7
+  output_dir: /workspace/MOREdit/output/softmask_demo_s0p7

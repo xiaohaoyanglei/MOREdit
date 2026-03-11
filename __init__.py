@@ -1,3 +1,2 @@
-"""Custom pointer-style LoRA training pipeline for Flux Kontext."""
-
+"""Custom pointer-style LoRA training pipeline for Qwen image models."""
 

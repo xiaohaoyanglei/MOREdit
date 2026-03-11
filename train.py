@@ -1,4 +1,4 @@
-"""Entry point for pointer-style Flux Kontext LoRA training."""
+"""Entry point for pointer-style Qwen LoRA training."""
 
 from __future__ import annotations
 
@@ -27,10 +27,10 @@ def _parse_bool(value) -> Optional[bool]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a pointer-style LoRA on Flux Kontext.")
+    parser = argparse.ArgumentParser(description="Train a pointer-style LoRA on Qwen image models.")
     parser.add_argument("--config", type=str, help="Path to YAML configuration.")
 
-    parser.add_argument("--model-path", default=None, help="Path to the local Flux Kontext model directory.")
+    parser.add_argument("--model-path", default=None, help="Path to the local Qwen image model directory.")
     parser.add_argument("--data-path", default=None, help="Path to annotations JSON/JSONL file.")
     parser.add_argument("--data-root", default=None, help="Root directory containing images and masks.")
     parser.add_argument("--output-dir", default=None, help="Directory to save checkpoints and heatmaps.")
@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
         "--offload-text-encoders",
         type=str,
         default=None,
-        help="Whether to keep CLIP/T5 encoders on CPU (true/false).",
+        help="Whether to keep Qwen text encoder on CPU (true/false).",
     )
 
     return parser.parse_args()

@@ -5,13 +5,13 @@
 - 输入：RGB（0~1） + 高斯点提示（1 通道），共 4 通道。
 - 目标：单实例二值 mask。
 - 点生成：从实例 mask 内随机采样一点（或质心），生成高斯提示，sigma 按短边比例设定。
-- 模型：pointer_lora.inference.mask_refiner.RefinerUNet（in_channels=4, base_channels=32）。
+- 模型：MOREdit.inference.mask_refiner.RefinerUNet（in_channels=4, base_channels=32）。
 
 使用示例：
-python -m pointer_lora.refiner_train \
+python -m MOREdit.refiner_train \
   --annotations /root/autodl-tmp/mhpv2_triples_en_val/annotations.json \
   --root /root/autodl-tmp/mhpv2_triples_en_val \
-  --save-path /root/autodl-tmp/pointer_lora/output/refiner/refiner_unet_epoch2.pt \
+  --save-path /workspace/MOREdit/output/refiner/refiner_unet_epoch2.pt \
   --epochs 2 --batch-size 8 --lr 1e-4 --sigma-ratio 0.05
 
 默认数据期望是我们之前转好的 triples（mhpv2_triples_en_val）。若有自定义实例数据，
@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 from tqdm.auto import tqdm
 
-from pointer_lora.inference.mask_refiner import RefinerUNet
+from .inference.mask_refiner import RefinerUNet
 
 
 def _load_records(path: str) -> List[Dict[str, Any]]:
@@ -363,5 +363,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

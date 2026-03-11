@@ -1,4 +1,4 @@
-"""Qwen inpaint/edit backend wrapper for pointer_lora soft-mask pipeline."""
+"""Qwen inpaint/edit backend wrapper for MOREdit soft-mask pipeline."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import torch
 from PIL import Image, ImageOps
 
-from pointer_lora.trainer import _to_dtype
+from ..trainer import _to_dtype
 
 
 class QwenInpaintBackend:
@@ -26,11 +26,11 @@ class QwenInpaintBackend:
         mode: str = "inpaint",
         controlnet_path: Optional[str] = None,
     ) -> None:
-        default_path = os.getenv("QWEN_EDIT_MODEL_PATH", "/root/autodl-tmp/Qwen-Image-Edit-2509")
+        default_path = os.getenv("QWEN_EDIT_MODEL_PATH", "/workspace/models/Qwen-Image-2512")
         self.model_path = Path(model_path or default_path)
 
         # ControlNet support: default path from env, enable by default for inpaint mode
-        default_controlnet = os.getenv("QWEN_CONTROLNET_PATH", "/root/autodl-tmp/Qwen-Image-ControlNet-Inpainting")
+        default_controlnet = os.getenv("QWEN_CONTROLNET_PATH", "/workspace/models/Qwen-Image-ControlNet-Inpainting")
         self.controlnet_path = Path(controlnet_path or default_controlnet) if controlnet_path != "" else None
         if not self.model_path.exists():
             raise FileNotFoundError(
@@ -175,6 +175,7 @@ class QwenInpaintBackend:
         negative_prompt: Optional[str] = None,
         true_cfg_scale: Optional[float] = None,
         strength: Optional[float] = None,
+        controlnet_conditioning_scale: Optional[float] = None,
     ) -> Image.Image:
         if self.mode != "inpaint":
             raise RuntimeError(f"Qwen backend mode is {self.mode}, cannot run inpaint.")
@@ -205,12 +206,25 @@ class QwenInpaintBackend:
         params = inspect.signature(self._pipeline.__call__).parameters
         kwargs = {}
 
-        if "image" in params:
-            kwargs["image"] = image
-        elif "images" in params:
-            kwargs["images"] = image
+        if self._using_controlnet:
+            # Qwen ControlNet inpaint expects `control_image`/`control_mask`.
+            if "control_image" in params:
+                kwargs["control_image"] = image
+            elif "image" in params:
+                kwargs["image"] = image
+            elif "images" in params:
+                kwargs["images"] = image
+            else:
+                raise RuntimeError(
+                    "[qwen] ControlNet pipeline __call__ does not accept control_image/image/images."
+                )
         else:
-            raise RuntimeError("[qwen] pipeline __call__ does not accept an image parameter.")
+            if "image" in params:
+                kwargs["image"] = image
+            elif "images" in params:
+                kwargs["images"] = image
+            else:
+                raise RuntimeError("[qwen] pipeline __call__ does not accept an image parameter.")
 
         # ControlNet pipelines use 'control_mask' instead of 'mask'
         mask_param = None
@@ -259,6 +273,9 @@ class QwenInpaintBackend:
             kwargs["height"] = int(height)
         if "width" in params:
             kwargs["width"] = int(width)
+
+        if controlnet_conditioning_scale is not None and "controlnet_conditioning_scale" in params:
+            kwargs["controlnet_conditioning_scale"] = float(controlnet_conditioning_scale)
 
         controlnet_info = " [ControlNet]" if self._using_controlnet else ""
         print(

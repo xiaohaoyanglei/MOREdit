@@ -1,10 +1,4 @@
-"""
-Pointer LoRA soft-mask inference pipeline.
-
-- Loads Flux Kontext + pointer LoRA weights.
-- Produces soft masks (heatmaps) from pointer prompts.
-- Optionally runs Kontext editing by feeding the soft mask back as control image.
-"""
+"""Pointer LoRA soft-mask inference pipeline for Qwen models."""
 
 from __future__ import annotations
 
@@ -21,19 +15,18 @@ import torch
 import torch.nn.functional as F
 import yaml
 from PIL import Image, ImageOps
-from diffusers import FluxKontextPipeline
 from torchvision.transforms import functional as TF
 
-from pointer_lora.lora import LoRAInjectionConfig, inject_lora_into_attention
-from pointer_lora.model import (
+from ..lora import LoRAInjectionConfig, inject_lora_into_attention, is_qwen_joint_attention
+from ..model import (
     encode_images,
     encode_prompts,
-    load_flux_kontext_components,
+    load_qwen_components,
     predict_noise,
 )
-from pointer_lora.pointer_recorder import PointerCache, PointerRecorder
-from pointer_lora.trainer import _to_dtype
-from pointer_lora.inference.mask_refiner import MaskRefinerConfig, load_mask_refiner
+from ..pointer_recorder import PointerCache, PointerRecorder
+from ..trainer import _to_dtype
+from .mask_refiner import MaskRefinerConfig, load_mask_refiner
 
 
 def _load_yaml(path: str | Path) -> Dict:
@@ -72,6 +65,7 @@ class PointerSoftMaskConfig:
     pointer_epsilon: float
     pointer_superres_factor: int
     pointer_superres_sharpness: float
+    pointer_noise_timestep: float
     pointer_attn_prefixes: Tuple[str, ...]
     refiner_in_channels: int
     refiner_base_channels: int
@@ -81,7 +75,7 @@ class PointerSoftMaskConfig:
 
 
 class PointerSoftMaskPipeline:
-    """Compute soft masks via pointer LoRA and optionally run Kontext editing."""
+    """Compute soft masks via pointer LoRA and run Qwen-based editing."""
 
     def __init__(
         self,
@@ -114,6 +108,7 @@ class PointerSoftMaskPipeline:
             pointer_epsilon=float(pointer_heatmap_cfg.get("epsilon", 1.0e-6)),
             pointer_superres_factor=int(pointer_superres_cfg.get("factor", 1)),
             pointer_superres_sharpness=float(pointer_superres_cfg.get("sharpness", 0.0)),
+            pointer_noise_timestep=float(pointer_cfg.get("noise_timestep", 500.0)),
             pointer_attn_prefixes=tuple(pointer_cfg.get("attn_blocks", lora_cfg.get("attn_blocks", []))),
             refiner_in_channels=int(refiner_cfg.get("in_channels", 4)),
             refiner_base_channels=int(refiner_cfg.get("base_channels", 32)),
@@ -138,7 +133,7 @@ class PointerSoftMaskPipeline:
             self.tokenizers,
             self.vae,
             self.scheduler,
-        ) = load_flux_kontext_components(
+        ) = load_qwen_components(
             self.config.model_path,
             device=self.device,
             dtype=self.dtype,
@@ -173,36 +168,9 @@ class PointerSoftMaskPipeline:
             dtype=torch.float32,
         ).view(1, 1, 3, 3)
 
-        # Build Kontext pipeline for optional editing
-        self.pipeline = FluxKontextPipeline(
-            scheduler=self.scheduler,
-            text_encoder=self.text_encoders[0],
-            tokenizer=self.tokenizers[0],
-            text_encoder_2=self.text_encoders[1],
-            tokenizer_2=self.tokenizers[1],
-            vae=self.vae,
-            transformer=self.transformer,
-        ).to(self.device)
-        self.pipeline.set_progress_bar_config(disable=True)
-
-        # Build Kontext *inpaint* pipeline (preferred when we want explicit mask-gated editing).
+        # Flux/Kontext path is intentionally disabled. We keep fields for backward compatibility.
+        self.pipeline = None
         self.inpaint_pipeline = None
-        try:
-            from diffusers import FluxKontextInpaintPipeline  # type: ignore
-
-            self.inpaint_pipeline = FluxKontextInpaintPipeline(
-                scheduler=self.scheduler,
-                text_encoder=self.text_encoders[0],
-                tokenizer=self.tokenizers[0],
-                text_encoder_2=self.text_encoders[1],
-                tokenizer_2=self.tokenizers[1],
-                vae=self.vae,
-                transformer=self.transformer,
-            ).to(self.device)
-            self.inpaint_pipeline.set_progress_bar_config(disable=True)
-        except Exception:
-            # If diffusers version doesn't ship the inpaint pipeline, we fall back to the old latent strategy.
-            self.inpaint_pipeline = None
 
         self.refiner: Optional[torch.nn.Module] = None
         refiner_weight_path = refiner_weights or self.config.refiner_weight_path
@@ -234,7 +202,7 @@ class PointerSoftMaskPipeline:
         self._pointer_modules = {}
         self._original_processors = {}
         for name, module in self.transformer.named_modules():
-            if module.__class__.__name__ != "FluxAttention":
+            if not is_qwen_joint_attention(module):
                 continue
             if prefixes and not any(name.startswith(prefix) or prefix in name for prefix in prefixes):
                 continue
@@ -261,16 +229,19 @@ class PointerSoftMaskPipeline:
         self.pointer_cache.append(key, tensor)
 
     def _build_token_masks(self, prompts: List[str]) -> torch.Tensor:
-        tokenizer = self.tokenizers[1]
-        encoded = tokenizer(
-            prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        input_ids = encoded.input_ids
-        attention_mask = encoded.attention_mask
+        tokenizer = self.tokenizers[0]
+        if hasattr(tokenizer, "encode_pointer_tokens"):
+            input_ids, attention_mask = tokenizer.encode_pointer_tokens(prompts, device=self.device)
+        else:
+            encoded = tokenizer(
+                prompts,
+                padding="max_length",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            input_ids = encoded.input_ids.to(self.device)
+            attention_mask = encoded.attention_mask.to(self.device)
         masks = torch.zeros_like(input_ids, dtype=torch.bool)
 
         token_filters = {tok.lower().strip(): True for tok in self.config.pointer_token_filters}
@@ -281,7 +252,7 @@ class PointerSoftMaskPipeline:
         }
 
         def normalize_token(token: str) -> str:
-            return token.lower().replace("▁", "").strip()
+            return token.replace("▁", "").replace("Ġ", "").replace("ġ", "").strip().lower()
 
         for batch_idx, ids in enumerate(input_ids):
             tokens = tokenizer.convert_ids_to_tokens(ids.tolist())
@@ -305,6 +276,11 @@ class PointerSoftMaskPipeline:
 
         for batch_idx in range(masks.size(0)):
             if not masks[batch_idx].any():
+                prompt_preview = prompts[batch_idx] if batch_idx < len(prompts) else ""
+                print(
+                    f"[soft-mask] Warning: no pointer tokens matched for prompt={prompt_preview!r}; "
+                    "falling back to full attention mask."
+                )
                 masks[batch_idx] = attention_mask[batch_idx].bool()
 
         return masks.to(self.device)
@@ -357,6 +333,7 @@ class PointerSoftMaskPipeline:
             mode="bilinear",
             align_corners=False,
         )
+        pointer_map = self._mask_letterbox_padding(pointer_map)
         return pointer_map.clamp(0.0, 1.0), (layer_sizes if return_layer_sizes else None)
 
     def _apply_super_resolution(self, pointer_map: torch.Tensor) -> torch.Tensor:
@@ -374,6 +351,37 @@ class PointerSoftMaskPipeline:
             upsampled = torch.clamp(upsampled + self._superres_sharpness * laplacian, 0.0, 1.0)
         return upsampled
 
+    def _mask_letterbox_padding(self, pointer_map: torch.Tensor) -> torch.Tensor:
+        """
+        Suppress padded (letterbox) area in square pointer maps.
+        This avoids peaks collapsing to padding borders (e.g. y=0 for wide images).
+        """
+        meta = getattr(self, "_guidance_resize_meta", None)
+        if not meta or pointer_map.ndim != 4:
+            return pointer_map
+
+        h = int(pointer_map.shape[-2])
+        w = int(pointer_map.shape[-1])
+        pad_top = int(meta.get("pad_top", 0))
+        pad_left = int(meta.get("pad_left", 0))
+        resized_h = int(meta.get("resized_height", h))
+        resized_w = int(meta.get("resized_width", w))
+
+        y0 = max(0, min(h, pad_top))
+        x0 = max(0, min(w, pad_left))
+        y1 = max(y0, min(h, y0 + resized_h))
+        x1 = max(x0, min(w, x0 + resized_w))
+
+        valid = torch.zeros((1, 1, h, w), dtype=pointer_map.dtype, device=pointer_map.device)
+        if y1 > y0 and x1 > x0:
+            valid[:, :, y0:y1, x0:x1] = 1.0
+
+        masked = pointer_map * valid
+        # Renormalize per sample after masking.
+        denom = masked.amax(dim=(-2, -1), keepdim=True).clamp_min(self.config.pointer_epsilon)
+        masked = (masked / denom).clamp(0.0, 1.0)
+        return masked
+
     # ------------------------------------------------------------------ Public API
     def compute_pointer_map(self, image_path: str, pointer_prompt: str) -> torch.Tensor:
         self._attach_pointer_recorders()
@@ -383,10 +391,21 @@ class PointerSoftMaskPipeline:
         pixel_values = tensor.unsqueeze(0).to(self.device, dtype=self.dtype)
 
         latents = encode_images(self.vae, pixel_values).to(self.device, dtype=self.dtype)
-        noise = torch.zeros_like(latents, dtype=self.dtype, device=self.device)
-        timesteps = torch.zeros((latents.size(0),), dtype=torch.long, device=self.device)
-        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
-        noisy_latents = noisy_latents.to(self.device, dtype=self.dtype)
+        # Use a non-zero noise timestep for pointer extraction. t=0 often collapses to near-flat maps.
+        timesteps = torch.full(
+            (latents.size(0),),
+            float(self.config.pointer_noise_timestep),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        latents_for_pointer = latents
+        if hasattr(self.scheduler, "scale_noise"):
+            noise = torch.randn_like(latents)
+            latents_for_pointer = self.scheduler.scale_noise(
+                latents,
+                timesteps,
+                noise=noise,
+            ).to(device=self.device, dtype=self.dtype)
 
         embeds = encode_prompts(
             [pointer_prompt],
@@ -400,7 +419,7 @@ class PointerSoftMaskPipeline:
             predict_noise(
                 self.transformer,
                 self.scheduler,
-                noisy_latents,
+                latents_for_pointer,
                 timesteps,
                 embeds,
             )
@@ -705,10 +724,12 @@ class PointerSoftMaskPipeline:
             return self._clickseg_cache[checkpoint]
         # Import ClickSEG dependencies
         try:
-            sys.path.insert(0, str(Path("/root/autodl-tmp/third_party/ClickSEG")))
+            _third_party = str(Path(__file__).resolve().parent.parent / "third_party")
+            if _third_party not in sys.path:
+                sys.path.insert(0, _third_party)
             from isegm.utils.serialization import load_model  # type: ignore
         except Exception as e:
-            raise ImportError(f"Cannot import ClickSEG; please ensure third_party/ClickSEG is available: {e}")
+            raise ImportError(f"Cannot import ClickSEG; please ensure third_party/isegm is available: {e}")
 
         ckpt = torch.load(checkpoint, map_location="cpu")
         model = load_model(ckpt["config"])
@@ -936,7 +957,7 @@ class PointerSoftMaskPipeline:
     def _get_qwen_backend(self, mode: str):
         mode = str(mode).strip().lower()
         if mode not in self._qwen_backends:
-            from pointer_lora.inference.qwen_inpaint_backend import QwenInpaintBackend
+            from .qwen_inpaint_backend import QwenInpaintBackend
 
             self._qwen_backends[mode] = QwenInpaintBackend(
                 device=self.device,
@@ -1068,6 +1089,7 @@ class PointerSoftMaskPipeline:
         edit_backend: str = "kontext",
         qwen_strength: Optional[float] = None,
         qwen_mode: str = "inpaint",
+        controlnet_conditioning_scale: Optional[float] = None,
     ) -> Image.Image:
         base_img = Image.open(source_image_path).convert("RGB")
         if base_img.size != (width, height):
@@ -1139,155 +1161,15 @@ class PointerSoftMaskPipeline:
                 negative_prompt=negative_prompt,
                 true_cfg_scale=true_cfg_scale,
                 strength=qwen_strength,
+                controlnet_conditioning_scale=controlnet_conditioning_scale,
             )
             self._last_qwen_mask_used = qwen_backend.last_mask_used
             self._last_qwen_image_resized = qwen_backend.last_image_resized
             return edited
-        if backend != "kontext":
-            raise ValueError(f"Unknown edit_backend: {edit_backend}")
-
-        prompt_embeds = encode_prompts(
-            [edit_prompt],
-            self.tokenizers,
-            self.text_encoders,
-            device=self.device,
-            dtype=self.dtype,
+        raise ValueError(
+            "Kontext/Flux backend has been removed. Please use `edit_backend='qwen'`."
         )
-        negative_prompt_embeds = None
-        negative_pooled_prompt_embeds = None
-        if negative_prompt:
-            neg = encode_prompts(
-                [negative_prompt],
-                self.tokenizers,
-                self.text_encoders,
-                device=self.device,
-                dtype=self.dtype,
-            )
-            negative_prompt_embeds = neg.text_embeds
-            negative_pooled_prompt_embeds = neg.pooled_embeds
-        generator: Optional[torch.Generator] = None
-        if seed is not None:
-            generator = torch.Generator(device=self.device)
-            generator.manual_seed(int(seed))
 
-        # Preferred path: explicit mask-gated editing via FluxKontextInpaintPipeline (diffusers).
-        # Mask semantics in diffusers: white = repaint, black = preserve.
-        if bool(use_inpaint_pipeline) and self.inpaint_pipeline is not None:
-            mask_img = self._mask_tensor_to_image(mask_for_edit, size=(width, height)).convert("L")
-            # Important: diffusers inpaint uses a hard <0.5 threshold internally for building `masked_image`.
-            # If we blur a soft mask directly, most pixels can fall below 0.5 and the model will barely repaint.
-            # So we binarize first, then feather the boundary.
-            mask_img = Image.eval(mask_img, lambda p: 255 if p >= 128 else 0)
-            if float(mask_feather) > 0:
-                from PIL import ImageFilter
-
-                mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=float(mask_feather)))
-            # for debugging / artifact saving
-            self._last_inpaint_mask_image = mask_img.copy()
-
-            strength = max(0.0, min(1.0, float(latent_inpaint_strength)))
-            return self.inpaint_pipeline(
-                image=base_img,
-                image_reference=base_img,
-                mask_image=mask_img,
-                prompt_embeds=prompt_embeds.text_embeds,
-                pooled_prompt_embeds=prompt_embeds.pooled_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                true_cfg_scale=float(true_cfg_scale),
-                height=height,
-                width=width,
-                strength=float(strength),
-                padding_mask_crop=padding_mask_crop,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                # IMPORTANT:
-                # FluxKontextInpaintPipeline will otherwise override (height,width) via:
-                # - `max_area` heuristic
-                # - preferred Kontext resolutions when `_auto_resize=True`
-                # which can make it *look* like the model ignores your mask (because the coordinate system changed).
-                # We default to preserving the requested size exactly.
-                max_area=int(height) * int(width),
-                _auto_resize=bool(inpaint_auto_resize),
-            ).images[0]
-
-        # Inpaint-latents strategy:
-        # - Keep reference image_latents intact (preserve identity / structure).
-        # - Initialize generation latents from the source latents, but inject noise inside the mask region.
-        # - Optionally apply soft pull-back each step (latent_blend_alpha) to limit spill.
-        src_latents = self._encode_vae_image_argmax(base_img)  # [1,C,Hl,Wl]
-        _, _, latent_h, latent_w = src_latents.shape
-        src_packed = self._pack_latents_flux(src_latents).to(device=self.device, dtype=self.dtype)
-
-        # Build a soft token mask aligned to Flux packed tokens.
-        mask_img = self._mask_tensor_to_image(mask_for_edit, size=(width, height))
-        if float(mask_feather) > 0:
-            from PIL import ImageFilter
-
-            mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=float(mask_feather)))
-
-        # Build masked conditioning image (hole) to prevent copying original content inside mask.
-        control_img = base_img
-        if bool(conditioning_masked_image):
-            control_img = self._make_masked_condition_image(
-                base_img=base_img,
-                mask_l=mask_img,
-                blur_radius=float(mask_feather),
-                fill=str(conditioning_fill),
-                noise_strength=float(conditioning_noise_strength),
-                seed=int(seed) if seed is not None else None,
-            )
-        self._last_conditioning_image = control_img.copy()
-        # Convert blurred mask back to tensor in [0,1]
-        m = TF.to_tensor(mask_img).to(device=self.device, dtype=self.dtype)[0].clamp(0.0, 1.0)
-        m = F.interpolate(m.unsqueeze(0).unsqueeze(0), size=(latent_h, latent_w), mode="bilinear", align_corners=False)[0, 0]
-        m_tok = F.avg_pool2d(m.unsqueeze(0).unsqueeze(0), kernel_size=2, stride=2)[0, 0].reshape(1, -1, 1).clamp(0.0, 1.0)
-
-        s = max(0.0, min(1.0, float(latent_inpaint_strength)))
-        if generator is not None:
-            noise = torch.randn(src_packed.shape, generator=generator, device=src_packed.device, dtype=src_packed.dtype)
-        else:
-            noise = torch.randn_like(src_packed)
-        latents_init = src_packed * (1.0 - s * m_tok) + noise * (s * m_tok)
-
-        alpha = max(0.0, min(1.0, float(latent_blend_alpha)))
-
-        callback_on_step_end = None
-        callback_inputs = ["latents"]
-        if alpha > 0.0:
-            # Soft blending weight: w = (1-alpha) + alpha*M, so outside region keeps (1-alpha) of the new latents.
-            w_tok = ((1.0 - alpha) + alpha * m_tok).clamp(0.0, 1.0)
-
-            def _cb(_pipe, step: int, timestep: int, kwargs: Dict[str, torch.Tensor]):
-                lat = kwargs["latents"]
-                if lat.shape != src_packed.shape:
-                    # If shape mismatch happens, skip blending rather than corrupting the generation.
-                    return {"latents": lat}
-                lat = w_tok * lat + (1.0 - w_tok) * src_packed
-                return {"latents": lat}
-
-            callback_on_step_end = _cb
-
-        result = self.pipeline(
-            image=control_img,
-            prompt_embeds=prompt_embeds.text_embeds,
-            pooled_prompt_embeds=prompt_embeds.pooled_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-            true_cfg_scale=float(true_cfg_scale),
-            height=height,
-            width=width,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            latents=latents_init,
-            max_area=height * width,
-            _auto_resize=False,
-            callback_on_step_end=callback_on_step_end,
-            callback_on_step_end_tensor_inputs=callback_inputs,
-        ).images[0]
-        return result
 
     def edit_image_inpaint(
         self,
@@ -1309,70 +1191,7 @@ class PointerSoftMaskPipeline:
         Explicit mask-gated editing using FluxKontextInpaintPipeline on a provided (image, mask).
         Intended for crop+inpaint workflows where the crop isolates the target subject.
         """
-        if self.inpaint_pipeline is None:
-            raise RuntimeError("FluxKontextInpaintPipeline is not available in this environment.")
-
-        img = image.convert("RGB")
-        if img.size != (width, height):
-            img = img.resize((width, height), Image.BILINEAR)
-
-        m = mask_image_l.convert("L")
-        if m.size != (width, height):
-            m = m.resize((width, height), Image.BILINEAR)
-
-        # Binarize then feather; diffusers uses a hard <0.5 threshold internally.
-        m = Image.eval(m, lambda p: 255 if p >= 128 else 0)
-        if float(mask_feather) > 0:
-            from PIL import ImageFilter
-
-            m = m.filter(ImageFilter.GaussianBlur(radius=float(mask_feather)))
-        self._last_inpaint_mask_image = m.copy()
-
-        prompt_embeds = encode_prompts(
-            [edit_prompt],
-            self.tokenizers,
-            self.text_encoders,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        negative_prompt_embeds = None
-        negative_pooled_prompt_embeds = None
-        if negative_prompt:
-            neg = encode_prompts(
-                [negative_prompt],
-                self.tokenizers,
-                self.text_encoders,
-                device=self.device,
-                dtype=self.dtype,
-            )
-            negative_prompt_embeds = neg.text_embeds
-            negative_pooled_prompt_embeds = neg.pooled_embeds
-
-        generator: Optional[torch.Generator] = None
-        if seed is not None:
-            generator = torch.Generator(device=self.device)
-            generator.manual_seed(int(seed))
-
-        s = max(0.0, min(1.0, float(strength)))
-        return self.inpaint_pipeline(
-            image=img,
-            image_reference=img,
-            mask_image=m,
-            prompt_embeds=prompt_embeds.text_embeds,
-            pooled_prompt_embeds=prompt_embeds.pooled_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-            true_cfg_scale=float(true_cfg_scale),
-            height=height,
-            width=width,
-            strength=float(s),
-            padding_mask_crop=padding_mask_crop,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            max_area=height * width,
-            _auto_resize=False,
-        ).images[0]
+        raise RuntimeError("Kontext/Flux inpaint path has been removed. Use Qwen backend instead.")
 
     def edit_image(
         self,
@@ -1389,49 +1208,7 @@ class PointerSoftMaskPipeline:
         """
         Plain Kontext edit without any mask logic. Useful when we crop the image to isolate the target.
         """
-        img = image.convert("RGB")
-        if img.size != (width, height):
-            img = img.resize((width, height), Image.BILINEAR)
-        prompt_embeds = encode_prompts(
-            [edit_prompt],
-            self.tokenizers,
-            self.text_encoders,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        negative_prompt_embeds = None
-        negative_pooled_prompt_embeds = None
-        if negative_prompt:
-            neg = encode_prompts(
-                [negative_prompt],
-                self.tokenizers,
-                self.text_encoders,
-                device=self.device,
-                dtype=self.dtype,
-            )
-            negative_prompt_embeds = neg.text_embeds
-            negative_pooled_prompt_embeds = neg.pooled_embeds
-
-        generator: Optional[torch.Generator] = None
-        if seed is not None:
-            generator = torch.Generator(device=self.device)
-            generator.manual_seed(int(seed))
-
-        return self.pipeline(
-            image=img,
-            prompt_embeds=prompt_embeds.text_embeds,
-            pooled_prompt_embeds=prompt_embeds.pooled_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-            true_cfg_scale=float(true_cfg_scale),
-            height=height,
-            width=width,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            max_area=height * width,
-            _auto_resize=False,
-        ).images[0]
+        raise RuntimeError("Kontext/Flux edit path has been removed. Use Qwen backend instead.")
 
     def save_pointer_artifacts(
         self,

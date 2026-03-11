@@ -53,12 +53,12 @@ def _parse_args() -> Paths:
     )
     ap.add_argument(
         "--pointer_json",
-        default="/root/autodl-tmp/pointer_lora/output/softmask_demo/20251223-172332/pointer_peak.json",
+        default="/workspace/MOREdit/output/softmask_demo/20251223-172332/pointer_peak.json",
         help="pointer_peak.json path (expects key: pixel=[x,y]).",
     )
     ap.add_argument(
         "--outdir",
-        default="/root/autodl-tmp/pointer_lora/output/softmask_demo/20251223-172332/efficientsam_point_prompt",
+        default="/workspace/MOREdit/output/softmask_demo/20251223-172332/efficientsam_point_prompt",
         help="Output directory for mask.png / overlay.png.",
     )
     ap.add_argument(

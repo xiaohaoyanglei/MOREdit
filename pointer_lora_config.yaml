@@ -1,7 +1,7 @@
 # Pointer LoRA training configuration
 
 model:
-  path: "/root/autodl-tmp/FLUX1-Kontext-dev"
+  path: "/workspace/models/Qwen-Image-2512"
   offload_text_encoders: true
 
 data:
@@ -10,7 +10,7 @@ data:
   resolution: 640
 
 training:
-  output_dir: "/root/autodl-tmp/pointer_lora/output"
+  output_dir: "/workspace/MOREdit/output"
   steps: 10000
   batch_size: 1
   lr: 1.0e-4
@@ -79,5 +79,3 @@ test_image:
   path: "/root/autodl-tmp/test_images/test4.png"
   prompt: "The second person on the right"
   # mask: "/root/autodl-tmp/test_images/test3_mask.png"  # 可选：若提供会一并在热力图网格中显示
-
-

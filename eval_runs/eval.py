@@ -22,11 +22,11 @@ from torchvision.transforms import functional as TF
 from torchvision.utils import save_image
 from tqdm import tqdm
 
-from pointer_lora.dataset import PointerTripletDataset
-from pointer_lora.lora import LoRAInjectionConfig, inject_lora_into_attention
-from pointer_lora.model import PromptEmbeds, encode_images, encode_prompts, load_flux_kontext_components, predict_noise
-from pointer_lora.pointer_recorder import PointerCache, PointerRecorder
-from pointer_lora.scheduler import CustomFlowMatchEulerDiscreteScheduler
+from ..dataset import PointerTripletDataset
+from ..lora import LoRAInjectionConfig, inject_lora_into_attention, is_qwen_joint_attention
+from ..model import PromptEmbeds, encode_images, encode_prompts, load_qwen_components, predict_noise
+from ..pointer_recorder import PointerCache, PointerRecorder
+from ..scheduler import CustomFlowMatchEulerDiscreteScheduler
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-bucket", type=int, default=300, help="每个‘人数桶’抽样的图像数量，0 表示使用全部。")
     parser.add_argument("--max-images", type=int, default=None, help="整体抽样的图像上限，用于快速 smoke test。")
     parser.add_argument("--seed", type=int, default=42, help="随机采样种子。")
-    parser.add_argument("--output-dir", default="pointer_lora/output/eval_runs", help="评测结果输出根目录。")
+    parser.add_argument("--output-dir", default="/workspace/MOREdit/output/eval_runs", help="评测结果输出根目录。")
     parser.add_argument("--compute-iou", action="store_true", help="除了 pointing accuracy 以外，同时统计 IoU / Dice。")
     parser.add_argument("--heatmap-threshold", type=float, default=0.35, help="当 compute-iou=True 时用于二值化热力图的阈值。")
     parser.add_argument("--save-details", action="store_true", help="将每条样本的命中结果保存成 CSV，便于排查。")
@@ -170,7 +170,7 @@ class PointerHeatmapPredictor:
             self.tokenizers,
             self.vae,
             self.scheduler,
-        ) = load_flux_kontext_components(
+        ) = load_qwen_components(
             model_cfg.model_path,
             device=self.device,
             dtype=self.dtype,
@@ -196,7 +196,7 @@ class PointerHeatmapPredictor:
     def _attach_pointer_recorders(self, attn_prefixes: Iterable[str]):
         self._original_processors: Dict[str, torch.nn.Module] = {}
         for name, module in self.transformer.named_modules():
-            if not getattr(module, "processor", None):
+            if not is_qwen_joint_attention(module):
                 continue
             if not any(name.startswith(prefix) for prefix in attn_prefixes):
                 continue
@@ -222,16 +222,19 @@ class PointerHeatmapPredictor:
                 module.bias.data.copy_(params["bias"].to(module.bias.device, dtype=module.bias.dtype))
 
     def _build_token_masks(self, prompts: List[str]) -> torch.Tensor:
-        tokenizer = self.tokenizers[1]
-        encoded = tokenizer(
-            prompts,
-            padding="max_length",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        input_ids = encoded.input_ids
-        attention_mask = encoded.attention_mask
+        tokenizer = self.tokenizers[0]
+        if hasattr(tokenizer, "encode_pointer_tokens"):
+            input_ids, attention_mask = tokenizer.encode_pointer_tokens(prompts, device=self.device)
+        else:
+            encoded = tokenizer(
+                prompts,
+                padding="max_length",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            input_ids = encoded.input_ids.to(self.device)
+            attention_mask = encoded.attention_mask.to(self.device)
         masks = torch.zeros_like(input_ids, dtype=torch.bool)
 
         token_filters = {tok.lower().strip(): True for tok in self.cfg.pointer_token_filters}
@@ -256,7 +259,7 @@ class PointerHeatmapPredictor:
         }
 
         def normalize(token: str) -> str:
-            return token.lower().replace("▁", "").strip()
+            return token.replace("▁", "").replace("Ġ", "").replace("ġ", "").strip().lower()
 
         for batch_idx, ids in enumerate(input_ids):
             tokens = tokenizer.convert_ids_to_tokens(ids.tolist())
@@ -280,6 +283,11 @@ class PointerHeatmapPredictor:
 
         for batch_idx in range(masks.size(0)):
             if not masks[batch_idx].any():
+                prompt_preview = prompts[batch_idx] if batch_idx < len(prompts) else ""
+                print(
+                    f"[pointer-eval] Warning: no pointer tokens matched for prompt={prompt_preview!r}; "
+                    "falling back to full attention mask."
+                )
                 masks[batch_idx] = attention_mask[batch_idx].bool()
 
         return masks.to(self.device)
@@ -547,54 +555,54 @@ def evaluate(
             fail_any = False
 
             for rec in per_image_records:
-        mask_rel = rec["mask_path"]
-        prompt = rec.get("prompt_loc", "")
-        mask_path = Path(run_cfg.data_root) / mask_rel
+                mask_rel = rec["mask_path"]
+                prompt = rec.get("prompt_loc", "")
+                mask_path = Path(run_cfg.data_root) / mask_rel
                 if not mask_path.exists():
                     progress.update(1)
-            continue
+                    continue
 
-        mask_tensor = prepare_mask_tensor(mask_path, resolution)
+                mask_tensor = prepare_mask_tensor(mask_path, resolution)
 
-        pointer_map = predictor.predict_pointer_map(image_tensor.unsqueeze(0), [prompt])
-        heat = pointer_map[0, 0].detach().float().cpu().numpy()
-        mask_np = mask_tensor.squeeze(0).detach().cpu().numpy()
+                pointer_map = predictor.predict_pointer_map(image_tensor.unsqueeze(0), [prompt])
+                heat = pointer_map[0, 0].detach().float().cpu().numpy()
+                mask_np = mask_tensor.squeeze(0).detach().cpu().numpy()
 
-        peak_index = np.argmax(heat)
-        h, w = heat.shape
-        peak_y, peak_x = divmod(int(peak_index), w)
-        hit = bool(mask_np[peak_y, peak_x] > 0.5)
+                peak_index = np.argmax(heat)
+                h, w = heat.shape
+                peak_y, peak_x = divmod(int(peak_index), w)
+                hit = bool(mask_np[peak_y, peak_x] > 0.5)
                 fail_any = fail_any or (not hit)
 
-        iou = dice = None
-        if run_cfg.compute_iou:
-            pred_mask = (heat >= run_cfg.heatmap_threshold).astype(np.float32)
-            intersection = float((pred_mask * mask_np).sum())
-            pred_sum = float(pred_mask.sum())
-            gt_sum = float(mask_np.sum())
-            union = pred_sum + gt_sum - intersection
-            if union <= 0:
-                iou = 1.0 if gt_sum == 0 else 0.0
-                dice = 1.0 if gt_sum == 0 else 0.0
-            else:
-                iou = intersection / union
-                dice = (2.0 * intersection) / (pred_sum + gt_sum + 1e-6)
+                iou = dice = None
+                if run_cfg.compute_iou:
+                    pred_mask = (heat >= run_cfg.heatmap_threshold).astype(np.float32)
+                    intersection = float((pred_mask * mask_np).sum())
+                    pred_sum = float(pred_mask.sum())
+                    gt_sum = float(mask_np.sum())
+                    union = pred_sum + gt_sum - intersection
+                    if union <= 0:
+                        iou = 1.0 if gt_sum == 0 else 0.0
+                        dice = 1.0 if gt_sum == 0 else 0.0
+                    else:
+                        iou = intersection / union
+                        dice = (2.0 * intersection) / (pred_sum + gt_sum + 1e-6)
 
-        buckets[bucket].update(hit, iou, dice)
-        overall.update(hit, iou, dice)
+                buckets[bucket].update(hit, iou, dice)
+                overall.update(hit, iou, dice)
 
-        if run_cfg.save_details:
-            detail_rows.append(
-                "{},{},{},{},{},{:.4f},{:.4f}".format(
-                    bucket,
+                if run_cfg.save_details:
+                    detail_rows.append(
+                        "{},{},{},{},{},{:.4f},{:.4f}".format(
+                            bucket,
                             img_rel,
-                    mask_rel,
-                    prompt.replace(",", " "),
-                    int(hit),
-                    peak_x,
-                    peak_y,
-                )
-            )
+                            mask_rel,
+                            prompt.replace(",", " "),
+                            int(hit),
+                            peak_x,
+                            peak_y,
+                        )
+                    )
 
                 per_image_results.append(
                     {
@@ -680,4 +688,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

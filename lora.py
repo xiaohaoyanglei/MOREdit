@@ -1,4 +1,4 @@
-"""Simple LoRA injection utilities for Flux cross-attention modules."""
+"""LoRA injection utilities for Qwen image joint-attention modules."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
 import torch
-from diffusers.models.transformers.transformer_flux import FluxAttention
+from diffusers.models.attention_processor import Attention
 
 
 class LoRALinear(torch.nn.Module):
@@ -79,12 +79,12 @@ def inject_lora_into_attention(
     transformer: torch.nn.Module,
     config: LoRAInjectionConfig,
 ) -> List[LoRALinear]:
-    """Inject LoRA modules into FluxAttention projections."""
+    """Inject LoRA modules into Qwen joint-attention projections."""
 
     lora_modules: List[LoRALinear] = []
 
     for module_path, module in transformer.named_modules():
-        if not isinstance(module, FluxAttention):
+        if not is_qwen_joint_attention(module):
             continue
         if not any(module_path.startswith(prefix) for prefix in config.attn_block_prefixes):
             continue
@@ -110,4 +110,13 @@ def inject_lora_into_attention(
 
     return lora_modules
 
+
+def is_qwen_joint_attention(module: torch.nn.Module) -> bool:
+    """Identify Qwen joint-attention blocks that expose image+text projections."""
+    if not isinstance(module, Attention):
+        return False
+    required = ("to_q", "to_k", "to_v", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out")
+    if not all(hasattr(module, name) for name in required):
+        return False
+    return getattr(module, "added_kv_proj_dim", None) is not None
 

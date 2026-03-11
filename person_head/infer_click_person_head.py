@@ -3,13 +3,13 @@
 Quick inference for ClickPersonHead.
 
 Example:
-  conda run -n edit python -m pointer_lora.person_head.infer_click_person_head \
-    --weights /root/autodl-tmp/pointer_lora/output/person_head/click_person_head.pt \
+  conda run -n edit python -m MOREdit.person_head.infer_click_person_head \
+    --weights /workspace/MOREdit/output/person_head/click_person_head.pt \
     --image /root/autodl-tmp/test_images/test4.png \
     --x 232 --y 391 \
     --efficientsam-repo /root/autodl-tmp/EfficientSAM_code \
     --efficientsam-ckpt /root/autodl-tmp/EfficientSAM/weights/efficient_sam_vitt.pt \
-    --outdir /root/autodl-tmp/pointer_lora/output/person_head/demo
+    --outdir /workspace/MOREdit/output/person_head/demo
 """
 
 from __future__ import annotations
@@ -105,5 +105,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

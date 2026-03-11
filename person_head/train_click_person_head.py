@@ -14,10 +14,10 @@ Training:
   - decoder head predicts 1024x1024 logits
 
 Run (recommended env has torch):
-  conda run -n edit python -m pointer_lora.person_head.train_click_person_head \
+  conda run -n edit python -m MOREdit.person_head.train_click_person_head \
     --annotations /root/autodl-tmp/mhpv2_triples_en_val/annotations.json \
     --root /root/autodl-tmp/mhpv2_triples_en_val \
-    --save /root/autodl-tmp/pointer_lora/output/person_head/click_person_head.pt \
+    --save /workspace/MOREdit/output/person_head/click_person_head.pt \
     --efficientsam-repo /root/autodl-tmp/EfficientSAM_code \
     --efficientsam-ckpt /root/autodl-tmp/EfficientSAM/weights/efficient_sam_vitt.pt \
     --epochs 2 --batch-size 8 --lr 1e-4
@@ -367,5 +367,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

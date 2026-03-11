@@ -1,4 +1,4 @@
-"""Dataset utilities for pointer-style Flux Kontext LoRA training."""
+"""Dataset utilities for pointer-style Qwen LoRA training."""
 
 from __future__ import annotations
 
@@ -183,5 +183,4 @@ class PointerTripletDataset(Dataset):
             sample["prompt_edit"] = record["prompt_edit"]
 
         return sample
-
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from PIL import Image, ImageFilter
 
-from pointer_lora.inference import PointerSoftMaskPipeline
+from . import PointerSoftMaskPipeline
 
 
 def _load_yaml(path: str):
@@ -19,10 +19,10 @@ def _load_yaml(path: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pointer LoRA soft-mask inference")
-    parser.add_argument("--config", default="pointer_lora/pointer_lora_config.yaml", help="路径：训练用 YAML（复用 pointer 配置）")
+    parser.add_argument("--config", default="/workspace/MOREdit/pointer_lora_config.yaml", help="路径：训练用 YAML（复用 pointer 配置）")
     parser.add_argument(
         "--lora-weights",
-        default="/root/autodl-tmp/pointer_lora/output/20251201-141737/weights/lora_step_007000.pt",
+        default="/workspace/MOREdit/output/20260307-092048/weights/lora_step_007000.pt",
         help="指针 LoRA 权重路径",
     )
     parser.add_argument("--refiner-weights", default=None, help="mask refiner 权重路径")
@@ -38,20 +38,20 @@ def parse_args() -> argparse.Namespace:
         help="定位 prompt（若不填则回退为 --prompt；若 --prompt 也为空且提供了 --edit-prompt，则会复用 edit_prompt 做定位）",
     )
     parser.add_argument("--edit-prompt", default=None, help="编辑 prompt（若不填则回退为 --prompt；仅描述要改什么，建议不包含位置信息）")
-    parser.add_argument("--output-dir", default="pointer_lora/output/softmask_infer", help="输出目录")
+    parser.add_argument("--output-dir", default="/workspace/MOREdit/output/softmask_infer", help="输出目录")
     parser.add_argument("--width", type=int, default=None, help="编辑输出宽度（默认跟原图保持一致，需为 16 的倍数）")
     parser.add_argument("--height", type=int, default=None, help="编辑输出高度（默认跟原图保持一致，需为 16 的倍数）")
-    parser.add_argument("--steps", type=int, default=20, help="Kontext 推理步数")
+    parser.add_argument("--steps", type=int, default=20, help="Qwen 推理步数")
     parser.add_argument("--guidance-scale", type=float, default=3.5, help="CFG guidance scale")
-    parser.add_argument("--true-cfg-scale", type=float, default=1.0, help="Kontext true CFG scale（>1 需要 negative_prompt 才生效）")
+    parser.add_argument("--true-cfg-scale", type=float, default=1.0, help="Qwen true CFG scale（>1 需要 negative_prompt 才生效）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--device", default=None, help="可选：cuda / cuda:1 / cpu，默认自动检测")
     parser.add_argument("--negative-prompt", default=None, help="负向 prompt（用于 true_cfg_scale>1 的 true-CFG）")
     parser.add_argument(
         "--edit-backend",
-        choices=["kontext", "qwen"],
-        default="kontext",
-        help="编辑后端：kontext=FluxKontextInpaintPipeline，qwen=Qwen inpaint/edit pipeline",
+        choices=["qwen"],
+        default="qwen",
+        help="编辑后端：仅支持 qwen",
     )
     parser.add_argument("--qwen-strength", type=float, default=None, help="Qwen inpaint strength（0~1，越小越保留原图）")
     parser.add_argument("--qwen-mode", choices=["inpaint", "edit"], default="inpaint", help="Qwen backend 模式：inpaint 或 edit")
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
         "--qwen-controlnet-path",
         type=str,
         default=None,
-        help="Qwen ControlNet Inpainting 模型路径（默认从 QWEN_CONTROLNET_PATH 环境变量读取，或 /root/autodl-tmp/Qwen-Image-ControlNet-Inpainting）",
+        help="Qwen ControlNet Inpainting 模型路径（默认从 QWEN_CONTROLNET_PATH 环境变量读取，或 /workspace/models/Qwen-Image-ControlNet-Inpainting）",
     )
     parser.add_argument("--latent-inpaint-strength", type=float, default=1.0, help="latents 初始化时在 mask 内注入噪声的强度（0=不注入；1=全注入）")
     parser.add_argument("--mask-feather", type=float, default=6.0, help="mask feather/blur 半径（像素），允许轻微外溢")
@@ -83,13 +83,13 @@ def parse_args() -> argparse.Namespace:
         "--inpaint-auto-resize",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="是否允许 FluxKontextInpaintPipeline 自动选择偏好的 Kontext 分辨率（默认关闭，避免 mask 坐标系变化导致看似“不吃mask”）。",
+        help='是否允许 FluxKontextInpaintPipeline 自动选择偏好的 Kontext 分辨率（默认关闭，避免 mask 坐标系变化导致看似"不吃mask"）。',
     )
     parser.add_argument(
         "--append-bbox-hint",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="将 mask 的 bbox 坐标（像素+百分比）追加到编辑 prompt（英文），用于减少“想改错人→mask内摆烂不改”。",
+        help='将 mask 的 bbox 坐标（像素+百分比）追加到编辑 prompt（英文），用于减少"想改错人->mask内摆烂不改"。',
     )
     parser.add_argument(
         "--bbox-threshold",
@@ -137,6 +137,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--peak-region-max-iters", type=int, default=2048, help="连通域扩张最大迭代次数（安全上限）")
     parser.add_argument("--no-peak-region-normalize", action="store_true", help="不对 peak_region 输出做 max=1 归一化")
     parser.add_argument("--job-config", default=None, help="推理 YAML，提供上述所有字段，命令行仅需这一项")
+    parser.add_argument("--decompose-lora", default=None, help="Prompt 解耦 LoRA 权重路径（仅在提供 --prompt 且未显式提供 --pointer-prompt/--edit-prompt 时生效）")
+    parser.add_argument("--decompose-base-model", default="/workspace/models/Qwen2.5-0.5B-Instruct", help="Prompt 解耦用的 base 模型路径")
     return parser.parse_args()
 
 
@@ -167,6 +169,8 @@ def main() -> None:
             "prompt",
             "pointer_prompt",
             "edit_prompt",
+            "decompose_lora",
+            "decompose_base_model",
             "negative_prompt",
             "output_dir",
             "width",
@@ -211,12 +215,40 @@ def main() -> None:
             "peak_region_connectivity",
             "peak_region_max_iters",
             "no_peak_region_normalize",
+            "controlnet_conditioning_scale",
         ]:
             if key in infer_cfg:
                 setattr(args, key, infer_cfg[key])
 
     if not args.image:
         raise ValueError("必须提供 --image（可在 job YAML 的 inference 段落中指定）")
+
+    # Prompt resolution strategy:
+    # - If user provides a single `--prompt` (no explicit pointer/edit prompts) and --decompose-lora is set,
+    #   automatically decompose the prompt into pointer + edit via the LoRA model.
+    #   Decomposition runs BEFORE the main pipeline loads to avoid GPU memory contention.
+    # - If user provides `--pointer-prompt` / `--edit-prompt`, they override independently (no decompose).
+    # - If `--prompt` is omitted but `--edit-prompt` is provided, fall back to using edit_prompt for pointer too.
+    base_prompt = args.prompt
+    decompose_lora = getattr(args, "decompose_lora", None)
+    if base_prompt and not args.pointer_prompt and not args.edit_prompt and decompose_lora:
+        from MOREdit.inference.prompt_decompose import PromptDecomposer
+        decomposer = PromptDecomposer(
+            base_model=getattr(args, "decompose_base_model", "/workspace/models/Qwen2.5-0.5B-Instruct"),
+            lora_weights=decompose_lora,
+            device=str(getattr(args, "device", "cpu") or "cpu"),
+        )
+        pointer_prompt, edit_prompt = decomposer.decompose(base_prompt)
+        decomposer.offload()  # free GPU before loading main pipeline
+    else:
+        pointer_prompt = args.pointer_prompt or base_prompt or args.edit_prompt
+        edit_prompt = args.edit_prompt or base_prompt
+
+    if not pointer_prompt:
+        raise ValueError("必须提供定位用的 prompt：--pointer-prompt（推荐）或 --prompt（或仅提供 --edit-prompt 也可回退复用）")
+
+    print(f"[soft-mask] pointer_prompt: {pointer_prompt!r}")
+    print(f"[soft-mask] edit_prompt: {edit_prompt!r}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -230,20 +262,6 @@ def main() -> None:
         refiner_weights=args.refiner_weights,
         qwen_controlnet_path=getattr(args, "qwen_controlnet_path", None),
     )
-
-    # Prompt resolution strategy:
-    # - If user provides a single `--prompt`, it is used for both pointer + edit by default.
-    # - If user provides `--pointer-prompt` / `--edit-prompt`, they override independently.
-    # - If `--prompt` is omitted but `--edit-prompt` is provided, fall back to using edit_prompt for pointer too.
-    base_prompt = args.prompt
-    pointer_prompt = args.pointer_prompt or base_prompt or args.edit_prompt
-    edit_prompt = args.edit_prompt or base_prompt
-
-    if not pointer_prompt:
-        raise ValueError("必须提供定位用的 prompt：--pointer-prompt（推荐）或 --prompt（或仅提供 --edit-prompt 也可回退复用）")
-
-    print(f"[soft-mask] pointer_prompt: {pointer_prompt!r}")
-    print(f"[soft-mask] edit_prompt: {edit_prompt!r}")
 
     edit_backend = str(getattr(args, "edit_backend", "kontext")).lower().strip()
 
@@ -362,9 +380,6 @@ def main() -> None:
                 crop_img = crop_img.resize((cw2, ch2), Image.BILINEAR)
                 crop_mask = crop_mask.resize((cw2, ch2), Image.BILINEAR)
 
-            # If inpaint pipeline is enabled, do crop+inpaint:
-            # - Inpaint enforces the mask inside the crop
-            # - We can paste the whole crop back (no alpha composite), minimizing seams and avoiding residue.
             if edit_backend == "qwen":
                 qwen_mode = str(getattr(args, "qwen_mode", "inpaint")).lower().strip()
                 qwen_backend = pipeline._get_qwen_backend(qwen_mode)
@@ -397,6 +412,7 @@ def main() -> None:
                         negative_prompt=args.negative_prompt,
                         true_cfg_scale=args.true_cfg_scale,
                         strength=getattr(args, "qwen_strength", None),
+                        controlnet_conditioning_scale=getattr(args, "controlnet_conditioning_scale", None),
                     )
                     pipeline._last_qwen_mask_used = qwen_backend.last_mask_used
                     pipeline._last_qwen_image_resized = qwen_backend.last_image_resized
@@ -423,7 +439,6 @@ def main() -> None:
                     pasted = base.copy()
                     pasted.paste(crop_edit.convert("RGB"), (x0, y0))
                 else:
-                    # Fallback: plain Kontext edit on crop, then composite back with soft mask.
                     crop_edit = pipeline.edit_image(
                         image=crop_img,
                         edit_prompt=edit_prompt,
@@ -439,14 +454,11 @@ def main() -> None:
                     paste_mode = str(getattr(args, "crop_paste_mode", "mask"))
                     pasted = base.copy()
                     if paste_mode == "full":
-                        # No mask suppression: paste the whole edited crop back.
                         pasted.paste(crop_edit.convert("RGB"), (x0, y0))
                     else:
-                        # Masked composite (conservative). Optionally relax via dilate+gamma.
                         a = crop_mask.convert("L")
                         dil = int(getattr(args, "crop_dilate", 0))
                         if dil > 0:
-                            # PIL MaxFilter size must be odd.
                             k = max(3, 2 * dil + 1)
                             a = a.filter(ImageFilter.MaxFilter(size=k))
                         feather = float(getattr(args, "crop_feather", 10.0))
@@ -497,6 +509,7 @@ def main() -> None:
                 mask_dilate=int(getattr(args, "mask_dilate", 0)),
                 qwen_strength=getattr(args, "qwen_strength", None),
                 qwen_mode=str(getattr(args, "qwen_mode", "inpaint")),
+                controlnet_conditioning_scale=getattr(args, "controlnet_conditioning_scale", None),
             )
             output_path = run_dir / "pointer_edit.png"
             result.save(output_path)
