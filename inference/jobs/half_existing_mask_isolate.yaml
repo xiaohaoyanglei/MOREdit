@@ -1,0 +1,31 @@
+model:
+  config: /workspace/MOREdit/pointer_lora_config.yaml
+  lora_weights: /workspace/MOREdit/output/20260307-112259/weights/lora_step_010000.pt
+  refiner_weights: null
+
+inference:
+  image: /workspace/test/test3.png
+  refined_mask_path: /workspace/MOREdit/output/controlnet_demo/20260307-145359/pointer_mask_refined.png
+  edit_prompt: "The same person wearing a red jacket, everything else unchanged."
+
+  edit_backend: qwen
+  qwen_mode: edit
+  qwen_model_path: /workspace/models/Qwen-Image-Edit-2511
+  qwen_controlnet_path: ""
+
+  negative_prompt: "blurry face, deformed face, low detail, bad anatomy, low quality"
+
+  width: null
+  height: null
+  steps: 30
+  guidance_scale: 1.0
+  true_cfg_scale: 1.0
+  seed: 256
+
+  output_dir: /workspace/MOREdit/output/half_infer_existing_mask
+
+  isolate_edit: true
+  isolate_dilate: 12
+  paste_feather: 3.0
+  paste_choke: 0
+  no_orb_align: false

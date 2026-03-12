@@ -84,6 +84,8 @@ class PointerSoftMaskPipeline:
         device: Optional[str] = None,
         refiner_weights: Optional[str] = None,
         qwen_controlnet_path: Optional[str] = None,
+        qwen_model_path: Optional[str] = None,
+        skip_pointer_model_init: bool = False,
     ) -> None:
         cfg = _load_yaml(config_path)
         model_cfg = cfg.get("model", {})
@@ -126,27 +128,34 @@ class PointerSoftMaskPipeline:
 
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.dtype = _to_dtype(self.config.dtype)
+        self.transformer = None
+        self.text_encoders = None
+        self.tokenizers = None
+        self.vae = None
+        self.scheduler = None
+        self.lora_modules: List[torch.nn.Module] = []
 
-        (
-            self.transformer,
-            self.text_encoders,
-            self.tokenizers,
-            self.vae,
-            self.scheduler,
-        ) = load_qwen_components(
-            self.config.model_path,
-            device=self.device,
-            dtype=self.dtype,
-            offload_text_encoders=self.config.offload_text_encoders,
-        )
+        if not skip_pointer_model_init:
+            (
+                self.transformer,
+                self.text_encoders,
+                self.tokenizers,
+                self.vae,
+                self.scheduler,
+            ) = load_qwen_components(
+                self.config.model_path,
+                device=self.device,
+                dtype=self.dtype,
+                offload_text_encoders=self.config.offload_text_encoders,
+            )
 
-        self.lora_modules = inject_lora_into_attention(
-            self.transformer,
-            lora_config,
-        )
-        if not os.path.exists(lora_weights):
-            raise FileNotFoundError(f"LoRA weight file not found: {lora_weights}")
-        _load_lora_state(self.lora_modules, lora_weights)
+            self.lora_modules = inject_lora_into_attention(
+                self.transformer,
+                lora_config,
+            )
+            if not os.path.exists(lora_weights):
+                raise FileNotFoundError(f"LoRA weight file not found: {lora_weights}")
+            _load_lora_state(self.lora_modules, lora_weights)
 
         self.pointer_cache = PointerCache()
         self._pointer_modules: Dict[str, torch.nn.Module] = {}
@@ -190,9 +199,13 @@ class PointerSoftMaskPipeline:
         self._clickseg_cache: Dict[str, Any] = {}
         self._qwen_backends: Dict[str, Any] = {}
         self._qwen_controlnet_path = qwen_controlnet_path
+        self._qwen_model_path = qwen_model_path
         self._last_qwen_mask_used: Optional[Image.Image] = None
         self._last_qwen_image_resized: Optional[Image.Image] = None
         self._last_qwen_full_edit: Optional[Image.Image] = None
+        self._last_isolated_crop: Optional[Image.Image] = None
+        self._last_edited_isolated: Optional[Image.Image] = None
+        self._last_orb_aligned: Optional[Image.Image] = None
 
     # ------------------------------------------------------------------ Pointer heatmap helpers
     def _attach_pointer_recorders(self) -> None:
@@ -960,6 +973,7 @@ class PointerSoftMaskPipeline:
             from .qwen_inpaint_backend import QwenInpaintBackend
 
             self._qwen_backends[mode] = QwenInpaintBackend(
+                model_path=self._qwen_model_path,
                 device=self.device,
                 dtype=self.dtype,
                 mode=mode,
@@ -1170,6 +1184,174 @@ class PointerSoftMaskPipeline:
             "Kontext/Flux backend has been removed. Please use `edit_backend='qwen'`."
         )
 
+
+    @staticmethod
+    def _orb_align_crop(
+        edited: np.ndarray,
+        reference: np.ndarray,
+        max_features: int = 5000,
+    ) -> np.ndarray:
+        """
+        Align ``edited`` (H×W×3 uint8) to ``reference`` using ORB + RANSAC affine.
+
+        Returns the warped image (same size as reference).
+        Falls back to ``edited`` unchanged on any failure (no cv2, too few matches, etc.).
+        """
+        try:
+            import cv2
+        except ImportError:
+            return edited
+
+        gray_edit = cv2.cvtColor(edited, cv2.COLOR_RGB2GRAY)
+        gray_ref = cv2.cvtColor(reference, cv2.COLOR_RGB2GRAY)
+
+        orb = cv2.ORB_create(nfeatures=max_features)
+        kp1, des1 = orb.detectAndCompute(gray_edit, None)
+        kp2, des2 = orb.detectAndCompute(gray_ref, None)
+
+        if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
+            return edited
+
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(des1, des2)
+        if len(matches) < 4:
+            return edited
+
+        matches = sorted(matches, key=lambda m: m.distance)
+        n_good = max(10, len(matches) // 3)
+        matches = matches[:n_good]
+
+        pts_edit = np.float32([kp1[m.queryIdx].pt for m in matches])
+        pts_ref = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+        M, _ = cv2.estimateAffinePartial2D(
+            pts_edit, pts_ref, method=cv2.RANSAC, ransacReprojThreshold=3.0
+        )
+        if M is None:
+            return edited
+
+        h, w = reference.shape[:2]
+        aligned = cv2.warpAffine(
+            edited, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+        )
+        return aligned
+
+    def isolate_edit_pasteback(
+        self,
+        source_image_path: str,
+        refined_mask: torch.Tensor,
+        edit_prompt: str,
+        width: int,
+        height: int,
+        *,
+        isolate_dilate: int = 12,
+        paste_feather: float = 3.0,
+        paste_choke: int = 0,
+        num_inference_steps: int = 30,
+        guidance_scale: float = 3.5,
+        true_cfg_scale: float = 1.0,
+        seed: Optional[int] = 42,
+        negative_prompt: Optional[str] = None,
+        use_orb_align: bool = True,
+        orb_max_features: int = 5000,
+        qwen_mode: str = "edit",
+        qwen_strength: Optional[float] = None,
+        controlnet_conditioning_scale: Optional[float] = None,
+    ) -> Image.Image:
+        """
+        Full-image isolate-edit with ORB-align paste-back.
+
+        Workflow:
+          a. Dilate mask → black-background isolation image → feed to Qwen Edit
+          b. ORB feature matching + estimateAffinePartial2D to align the
+             edited result back to the original image coordinate space
+          c. Fill mask-outside pixels from the original image (background
+             recovery by region, not brightness threshold)
+          d. Feathered composite using the original *non-dilated* mask so
+             that table edges and other background details are preserved
+        """
+        from PIL import ImageFilter
+
+        # 1. Load base image at target resolution
+        base = Image.open(source_image_path).convert("RGB")
+        if base.size != (width, height):
+            base = base.resize((width, height), Image.BILINEAR)
+
+        # 2. Build mask at edit resolution
+        mask_for_edit = self._resize_mask_for_edit(refined_mask, width, height)
+        mask_img = self._mask_tensor_to_image(mask_for_edit, size=(width, height)).convert("L")
+        mask_bin = mask_img.point(lambda p: 255 if p >= 128 else 0)
+        mask_orig_arr = np.array(mask_bin, dtype=np.uint8)
+        if not np.any(mask_orig_arr > 0):
+            raise RuntimeError("mask is empty; cannot isolate-edit.")
+
+        # a. Dilate mask for black-background isolation
+        k_dilate = max(3, 2 * int(isolate_dilate) + 1)
+        mask_dilated = mask_bin.filter(ImageFilter.MaxFilter(size=k_dilate))
+        mask_dilated_arr = np.array(mask_dilated, dtype=np.uint8)
+        orig_arr = np.array(base, dtype=np.uint8)
+        alpha_d = (mask_dilated_arr > 0)[..., None].astype(np.uint8)
+        isolated_arr = orig_arr * alpha_d
+        isolated_image = Image.fromarray(isolated_arr, mode="RGB")
+        self._last_isolated_crop = isolated_image.copy()
+
+        # This path is intentionally "black background isolation -> Qwen Edit".
+        # Using inpaint here mixes in a different editing regime and defeats the
+        # purpose of validating the paste-back logic itself.
+        qwen_mode = str(qwen_mode).strip().lower()
+        if qwen_mode != "edit":
+            raise ValueError(
+                "isolate_edit_pasteback only supports qwen_mode='edit'. "
+                "Use the regular inpaint path for qwen_mode='inpaint'."
+            )
+        _ = qwen_strength
+        _ = controlnet_conditioning_scale
+        qwen_backend = self._get_qwen_backend("edit")
+        edited_isolated = qwen_backend.run_edit(
+            image_pil=isolated_image,
+            prompt=edit_prompt,
+            seed=seed,
+            steps=num_inference_steps,
+            guidance=guidance_scale,
+            out_size=(width, height),
+            negative_prompt=negative_prompt,
+            true_cfg_scale=true_cfg_scale,
+        )
+
+        self._last_qwen_full_edit = edited_isolated.copy()
+        self._last_edited_isolated = edited_isolated.copy()
+        self._last_qwen_image_resized = getattr(qwen_backend, "last_image_resized", None)
+
+        edited_arr = np.array(edited_isolated.convert("RGB"), dtype=np.uint8)
+        isolated_np = isolated_arr
+
+        # b. ORB alignment: warp edited → original image coordinate space
+        if use_orb_align:
+            aligned_arr = self._orb_align_crop(edited_arr, isolated_np, max_features=orb_max_features)
+        else:
+            aligned_arr = edited_arr
+        self._last_orb_aligned = Image.fromarray(aligned_arr, mode="RGB")
+
+        # c. Background recovery: dilation is only for the model input buffer.
+        # Final keep/restore regions should follow the original (non-dilated)
+        # mask, otherwise the extra dilated ring may preserve model artifacts
+        # and create a dark/dirty halo after feathering.
+        bg_mask = (mask_orig_arr == 0)[..., None]
+        final_mask = mask_bin
+        if int(paste_choke) > 0:
+            choke_size = max(3, 2 * int(paste_choke) + 1)
+            final_mask = final_mask.filter(ImageFilter.MinFilter(size=choke_size))
+
+        feather_mask = final_mask.convert("L")
+        if paste_feather > 0:
+            feather_mask = feather_mask.filter(ImageFilter.GaussianBlur(radius=float(paste_feather)))
+        feather_arr = np.array(feather_mask, dtype=np.float32)[..., None] / 255.0
+
+        recovered_arr = np.where(bg_mask, orig_arr, aligned_arr).astype(np.uint8)
+
+        # d. Feathered composite with original non-dilated mask
+        composite_arr = (recovered_arr * feather_arr + orig_arr * (1.0 - feather_arr)).astype(np.uint8)
+        return Image.fromarray(composite_arr, mode="RGB")
 
     def edit_image_inpaint(
         self,

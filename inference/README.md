@@ -48,7 +48,7 @@ hf download InstantX/Qwen-Image-ControlNet-Inpainting \
 - `mask_mode`: `peak_region | refiner | gaussian | clickseg`
 - `mask_dilate`: 编辑前膨胀 mask
 - `mask_feather`: 编辑前羽化 mask
-- `crop_edit`: 先按 mask bbox 裁剪再编辑，降低改错人风险
+- `isolate_edit`: 整图黑底隔离后走 Qwen Edit，再做 ORB 对齐与贴回
 - `qwen_strength`: inpaint 强度（仅 inpaint 模式）
 
 ## ClickSEG 模式

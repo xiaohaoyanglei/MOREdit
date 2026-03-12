@@ -45,7 +45,7 @@ pip install torch torchvision diffusers transformers pyyaml pillow tqdm opencv-p
 
 模型目录至少要有：
 
-- Qwen 主模型（示例：`/workspace/models/Qwen-Image-2512`）
+- Qwen 主模型（示例：`/workspace/models/Qwen-Image-Edit-2511`）
 - ControlNet（可选但推荐，示例：`/workspace/models/Qwen-Image-ControlNet-Inpainting`）
 
 ## 开始训练

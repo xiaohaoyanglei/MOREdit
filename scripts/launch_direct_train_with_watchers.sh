@@ -46,11 +46,11 @@ rm -f "${BEFORE_FILE}"
 echo "[direct-launch] run_dir=${RUN_DIR}" | tee -a "${LAUNCH_LOG}"
 echo "${RUN_DIR}" > "${OUT_BASE}/latest_run_dir.txt"
 
-nohup "${PROJECT_DIR}/scripts/watch_train_until_done.sh" "${TRAIN_PID}" "${RUN_DIR}" 60 >> "${LAUNCH_LOG}" 2>&1 &
+nohup bash "${PROJECT_DIR}/scripts/watch_train_until_done.sh" "${TRAIN_PID}" "${RUN_DIR}" 60 >> "${LAUNCH_LOG}" 2>&1 &
 WATCH_PID=$!
 echo "[direct-launch] watch_pid=${WATCH_PID}" | tee -a "${LAUNCH_LOG}"
 
-nohup "${PROJECT_DIR}/scripts/watch_checkpoints_and_infer.sh" "${TRAIN_PID}" "${RUN_DIR}" "${CONFIG_PATH}" 10000 1000 >> "${LAUNCH_LOG}" 2>&1 &
+nohup bash "${PROJECT_DIR}/scripts/watch_checkpoints_and_infer.sh" "${TRAIN_PID}" "${RUN_DIR}" "${CONFIG_PATH}" 10000 1000 >> "${LAUNCH_LOG}" 2>&1 &
 INFER_WATCH_PID=$!
 echo "[direct-launch] infer_watch_pid=${INFER_WATCH_PID}" | tee -a "${LAUNCH_LOG}"
 
