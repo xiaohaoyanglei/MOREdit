@@ -4,11 +4,12 @@
 """
 
 import json
+import os
 import random
 import time
 import google.generativeai as genai
 
-API_KEY = "AIzaSyAgkFZS5ThkGeud4NDpQyRY_oiuejQm8e0"
+API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 OUTPUT_RAW = "/workspace/dataset/raw_1000.jsonl"
 OUTPUT_FILE = "/workspace/dataset/prompt_decompose_500.jsonl"
 TARGET_COUNT = 1000
