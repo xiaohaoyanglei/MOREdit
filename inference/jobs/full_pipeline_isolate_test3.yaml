@@ -1,23 +1,22 @@
 model:
   config: /workspace/MOREdit/pointer_lora_config.yaml
-  lora_weights: "__TODO_LORA_WEIGHTS__"
+  lora_weights: /workspace/MOREdit/output/20260312-124608/weights/lora_step_010000.pt
   refiner_weights: null
 
 inference:
-  image: "__TODO_IMAGE_PATH__"
-  pointer_prompt: "__TODO_POINTER_PROMPT__"
-  edit_prompt: "__TODO_EDIT_PROMPT__"
+  image: /workspace/test/test3.png
+  pointer_prompt: "the third person from the right"
+  edit_prompt: "The same person wearing a red jacket, everything else unchanged."
 
   edit_backend: qwen
   qwen_mode: edit
-  qwen_model_path: /workspace/models/Qwen-Image-Edit-2511
+  qwen_model_path: /workspace/models_weight/Qwen-Image-Edit-2511
   qwen_controlnet_path: ""
 
   negative_prompt: "blurry face, deformed face, low detail, bad anatomy, low quality"
 
-  # Full pipeline: generate mask first, then run full-image isolate edit.
   mask_mode: clickseg
-  clickseg_checkpoint: "__TODO_CLICKSEG_CHECKPOINT__"
+  clickseg_checkpoint: /workspace/models_weight/clickseg.pth
   clickseg_threshold: 0.40
   clickseg_filter_component: true
   clickseg_use_prev_mask: false
@@ -36,7 +35,7 @@ inference:
   true_cfg_scale: 1.0
   seed: 256
 
-  output_dir: "__TODO_OUTPUT_DIR__"
+  output_dir: /workspace/MOREdit/output/full_pipeline_isolate_test3
 
   isolate_edit: true
   isolate_dilate: 12

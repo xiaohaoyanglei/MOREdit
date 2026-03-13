@@ -45,8 +45,8 @@ pip install torch torchvision diffusers transformers pyyaml pillow tqdm opencv-p
 
 模型目录至少要有：
 
-- Qwen 主模型（示例：`/workspace/models/Qwen-Image-Edit-2511`）
-- ControlNet（可选但推荐，示例：`/workspace/models/Qwen-Image-ControlNet-Inpainting`）
+- Qwen 主模型（示例：`/workspace/models_weight/Qwen-Image-Edit-2511`）
+- ControlNet（可选但推荐，示例：`/workspace/models_weight/Qwen-Image-ControlNet-Inpainting`）
 
 ## 开始训练
 
@@ -75,7 +75,7 @@ python -m MOREdit.train --config /workspace/MOREdit/pointer_lora_config.yaml
 
 ```bash
 python -m MOREdit.inference.run_soft_mask \
-  --job-config /workspace/MOREdit/inference/jobs/test3_controlnet.yaml
+  --job-config /workspace/MOREdit/inference/jobs/full_pipeline_isolate_test3.yaml
 ```
 
 若你只想先验 LoRA mask（不跑编辑），把 `edit_prompt` 设为 `null`。
@@ -92,7 +92,7 @@ python -m MOREdit.inference.run_soft_mask \
 
 ```bash
 hf download InstantX/Qwen-Image-ControlNet-Inpainting \
-  --local-dir /workspace/models/Qwen-Image-ControlNet-Inpainting
+  --local-dir /workspace/models_weight/Qwen-Image-ControlNet-Inpainting
 ```
 
 ## 评测

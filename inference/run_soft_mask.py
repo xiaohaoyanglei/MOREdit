@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="/workspace/MOREdit/pointer_lora_config.yaml", help="路径：训练用 YAML（复用 pointer 配置）")
     parser.add_argument(
         "--lora-weights",
-        default="/workspace/MOREdit/output/20260307-092048/weights/lora_step_007000.pt",
+        default="/workspace/MOREdit/output/20260312-124608/weights/lora_step_010000.pt",
         help="指针 LoRA 权重路径",
     )
     parser.add_argument("--refiner-weights", default=None, help="mask refiner 权重路径")
@@ -67,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--qwen-controlnet-path",
         type=str,
         default=None,
-        help="Qwen ControlNet Inpainting 模型路径（默认从 QWEN_CONTROLNET_PATH 环境变量读取，或 /workspace/models/Qwen-Image-ControlNet-Inpainting）",
+        help="Qwen ControlNet Inpainting 模型路径（默认从 QWEN_CONTROLNET_PATH 环境变量读取，或 /workspace/models_weight/Qwen-Image-ControlNet-Inpainting）",
     )
     parser.add_argument(
         "--qwen-model-path",
@@ -437,6 +437,10 @@ def main() -> None:
             if orb_aligned is not None:
                 orb_aligned.save(run_dir / "pointer_orb_aligned.png")
                 print(f"[soft-mask] Saved ORB-aligned image to {run_dir / 'pointer_orb_aligned.png'}")
+            merged_isolated = getattr(pipeline, "_last_merged_isolated", None)
+            if merged_isolated is not None:
+                merged_isolated.save(run_dir / "pointer_merged_isolated.png")
+                print(f"[soft-mask] Saved merged isolated image to {run_dir / 'pointer_merged_isolated.png'}")
         else:
             result = pipeline.edit_with_soft_mask(
                 refined_mask=refined_mask,

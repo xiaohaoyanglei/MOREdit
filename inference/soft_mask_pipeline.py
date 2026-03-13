@@ -206,6 +206,7 @@ class PointerSoftMaskPipeline:
         self._last_isolated_crop: Optional[Image.Image] = None
         self._last_edited_isolated: Optional[Image.Image] = None
         self._last_orb_aligned: Optional[Image.Image] = None
+        self._last_merged_isolated: Optional[Image.Image] = None
 
     # ------------------------------------------------------------------ Pointer heatmap helpers
     def _attach_pointer_recorders(self) -> None:
@@ -1232,7 +1233,12 @@ class PointerSoftMaskPipeline:
 
         h, w = reference.shape[:2]
         aligned = cv2.warpAffine(
-            edited, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+            edited,
+            M,
+            (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
         )
         return aligned
 
@@ -1332,25 +1338,30 @@ class PointerSoftMaskPipeline:
             aligned_arr = edited_arr
         self._last_orb_aligned = Image.fromarray(aligned_arr, mode="RGB")
 
-        # c. Background recovery: dilation is only for the model input buffer.
-        # Final keep/restore regions should follow the original (non-dilated)
-        # mask, otherwise the extra dilated ring may preserve model artifacts
-        # and create a dark/dirty halo after feathering.
-        bg_mask = (mask_orig_arr == 0)[..., None]
-        final_mask = mask_bin
-        if int(paste_choke) > 0:
-            choke_size = max(3, 2 * int(paste_choke) + 1)
-            final_mask = final_mask.filter(ImageFilter.MinFilter(size=choke_size))
+        # c. Use the original isolated image as background within the isolated
+        # support, and only keep aligned edit content where the edited support
+        # remains valid. A small inward choke removes the residual dark border
+        # caused by edit shrink near the black background.
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("OpenCV is required for isolate-edit paste-back.") from exc
 
-        feather_mask = final_mask.convert("L")
-        if paste_feather > 0:
-            feather_mask = feather_mask.filter(ImageFilter.GaussianBlur(radius=float(paste_feather)))
-        feather_arr = np.array(feather_mask, dtype=np.float32)[..., None] / 255.0
+        black_threshold = 8
+        edit_support_choke = 2.0 + max(0.0, float(paste_choke))
+        iso_support = isolated_np.max(axis=2) > black_threshold
+        edit_support = aligned_arr.max(axis=2) > black_threshold
+        if edit_support_choke > 0:
+            support_u8 = (edit_support.astype(np.uint8) * 255)
+            dist = cv2.distanceTransform(support_u8, cv2.DIST_L2, 5)
+            edit_support = dist > float(edit_support_choke)
 
-        recovered_arr = np.where(bg_mask, orig_arr, aligned_arr).astype(np.uint8)
+        merged_arr = np.where(edit_support[..., None], aligned_arr, isolated_np).astype(np.uint8)
+        self._last_merged_isolated = Image.fromarray(merged_arr, mode="RGB")
 
-        # d. Feathered composite with original non-dilated mask
-        composite_arr = (recovered_arr * feather_arr + orig_arr * (1.0 - feather_arr)).astype(np.uint8)
+        # d. Hard paste back using the isolated support. This avoids reintroducing
+        # the black-border halo while preserving the original isolated boundary.
+        composite_arr = np.where(iso_support[..., None], merged_arr, orig_arr).astype(np.uint8)
         return Image.fromarray(composite_arr, mode="RGB")
 
     def edit_image_inpaint(

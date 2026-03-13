@@ -26,11 +26,11 @@ class QwenInpaintBackend:
         mode: str = "inpaint",
         controlnet_path: Optional[str] = None,
     ) -> None:
-        default_path = os.getenv("QWEN_EDIT_MODEL_PATH", "/workspace/models/Qwen-Image-Edit-2511")
+        default_path = os.getenv("QWEN_EDIT_MODEL_PATH", "/workspace/models_weight/Qwen-Image-Edit-2511")
         self.model_path = Path(model_path or default_path)
 
         # ControlNet support: default path from env, enable by default for inpaint mode
-        default_controlnet = os.getenv("QWEN_CONTROLNET_PATH", "/workspace/models/Qwen-Image-ControlNet-Inpainting")
+        default_controlnet = os.getenv("QWEN_CONTROLNET_PATH", "/workspace/models_weight/Qwen-Image-ControlNet-Inpainting")
         self.controlnet_path = Path(controlnet_path or default_controlnet) if controlnet_path != "" else None
         if not self.model_path.exists():
             raise FileNotFoundError(

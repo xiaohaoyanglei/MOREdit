@@ -1,5 +1,5 @@
 model:
-  path: "/workspace/models/Qwen-Image-Edit-2511"
+  path: "/workspace/models_weight/Qwen-Image-Edit-2511"
   offload_text_encoders: false
 
 data:
